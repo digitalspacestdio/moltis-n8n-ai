@@ -1,0 +1,13 @@
+schema: spec-driven
+
+context: |
+  moltis-n8n-ai: Docker stack combining zeroclaw (AI agent gateway) and n8n (workflow automation).
+  Tech: Docker Compose, Rust (zeroclaw), n8n.
+  Paths: config/zeroclaw.toml, workflows/*.json, .env.
+  zeroclaw calls n8n at http://n8n:5678/webhook; skills enabled via config.
+
+rules:
+  proposal:
+    - Keep proposals concise; mention Docker/n8n/zeroclaw when relevant
+  tasks:
+    - Break tasks into chunks under ~2 hours; reference workflows/ or config/ when applicable

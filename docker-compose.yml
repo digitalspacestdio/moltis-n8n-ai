@@ -1,0 +1,481 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ===========================================
+  # Traefik - Reverse Proxy & TLS
+  # ===========================================
+  traefik:
+    image: traefik:v3.6.9
+    container_name: ai-stack-traefik
+    environment:
+      - DOCKER_API_VERSION=1.44
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=ai-stack"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=${PROXY_EMAIL:-}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - traefik-letsencrypt:/letsencrypt
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/traefik/`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-strip-prefix"
+      - "traefik.http.routers.traefik-dashboard-http.rule=PathPrefix(`/traefik/`)"
+      - "traefik.http.routers.traefik-dashboard-http.entrypoints=web"
+      - "traefik.http.routers.traefik-dashboard-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.traefik-dashboard-http.service=api@internal"
+      - "traefik.http.routers.traefik-api.rule=PathPrefix(`/api/`) && HeaderRegexp(`Referer`, `^https?://[^/]+/traefik/.*$`)"
+      - "traefik.http.routers.traefik-api.entrypoints=websecure"
+      - "traefik.http.routers.traefik-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-api.service=api@internal"
+      - "traefik.http.routers.traefik-api-http.rule=PathPrefix(`/api/`)"
+      - "traefik.http.routers.traefik-api-http.entrypoints=web"
+      - "traefik.http.routers.traefik-api-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.traefik-api-http.service=api@internal"
+      - "traefik.http.middlewares.traefik-strip-prefix.stripprefix.prefixes=/traefik/"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # ===========================================
+  # PostgreSQL - Shared storage (n8n, litellm, baserow)
+  # ===========================================
+  postgres:
+    image: postgres:17-alpine
+    container_name: ai-stack-postgres
+    environment:
+      - POSTGRES_USER=${DB_USER:-app_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-app_pass}
+      - POSTGRES_DB=${DB_NAME:-app_db}
+      - LITELLM_DB=${LITELLM_DB:-litellm}
+      - BASEROW_DB=${BASEROW_DB:-baserow}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/postgres-init.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-app_user} -d $${POSTGRES_DB:-app_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # ===========================================
+  # Baserow - deployment on dedicated domain
+  # ===========================================
+  baserow-redis:
+    image: redis:7-alpine
+    container_name: ai-stack-baserow-redis
+    command: ["redis-server", "--requirepass", "${BASEROW_REDIS_PASSWORD:-change-me-baserow-redis}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${BASEROW_REDIS_PASSWORD:-change-me-baserow-redis}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  baserow-backend:
+    image: baserow/backend:${BASEROW_VERSION:-2.1.3}
+    container_name: ai-stack-baserow-backend
+    environment:
+      - SECRET_KEY=${BASEROW_SECRET_KEY:-change-me-baserow-secret}
+      - BASEROW_JWT_SIGNING_KEY=${BASEROW_JWT_SIGNING_KEY:-change-me-baserow-jwt}
+      - BASEROW_PUBLIC_URL=https://${BASEROW_DOMAIN}
+      - PUBLIC_WEB_FRONTEND_URL=https://${BASEROW_DOMAIN}
+      - PUBLIC_BACKEND_URL=https://${BASEROW_DOMAIN}
+      - PRIVATE_BACKEND_URL=http://baserow-backend:8000
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DB_USER:-app_user}
+      - DATABASE_PASSWORD=${DB_PASSWORD:-app_pass}
+      - DATABASE_NAME=${BASEROW_DB:-baserow}
+      - REDIS_HOST=baserow-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${BASEROW_REDIS_PASSWORD:-change-me-baserow-redis}
+      - MIGRATE_ON_STARTUP=true
+      - BASEROW_EXTRA_ALLOWED_HOSTS=${BASEROW_DOMAIN}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=ai-stack"
+      - "traefik.http.routers.baserow-api.rule=PathPrefix(`/api`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-api.priority=80"
+      - "traefik.http.routers.baserow-api.entrypoints=websecure"
+      - "traefik.http.routers.baserow-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.baserow-api.service=baserow-backend"
+      - "traefik.http.routers.baserow-api-http.rule=PathPrefix(`/api`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-api-http.priority=80"
+      - "traefik.http.routers.baserow-api-http.entrypoints=web"
+      - "traefik.http.routers.baserow-api-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.baserow-api-http.service=baserow-backend"
+      - "traefik.http.routers.baserow-ws.rule=PathPrefix(`/ws`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-ws.priority=80"
+      - "traefik.http.routers.baserow-ws.entrypoints=websecure"
+      - "traefik.http.routers.baserow-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.baserow-ws.service=baserow-backend"
+      - "traefik.http.routers.baserow-ws-root.rule=PathPrefix(`/ws/core`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-ws-root.priority=85"
+      - "traefik.http.routers.baserow-ws-root.entrypoints=websecure"
+      - "traefik.http.routers.baserow-ws-root.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.baserow-ws-root.service=baserow-backend"
+      - "traefik.http.routers.baserow-ws-http.rule=PathPrefix(`/ws`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-ws-http.priority=80"
+      - "traefik.http.routers.baserow-ws-http.entrypoints=web"
+      - "traefik.http.routers.baserow-ws-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.baserow-ws-http.service=baserow-backend"
+      - "traefik.http.routers.baserow-ws-root-http.rule=PathPrefix(`/ws/core`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-ws-root-http.priority=85"
+      - "traefik.http.routers.baserow-ws-root-http.entrypoints=web"
+      - "traefik.http.routers.baserow-ws-root-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.baserow-ws-root-http.service=baserow-backend"
+      - "traefik.http.routers.baserow-media.rule=PathPrefix(`/media`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-media.priority=80"
+      - "traefik.http.routers.baserow-media.entrypoints=websecure"
+      - "traefik.http.routers.baserow-media.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.baserow-media.service=baserow-backend"
+      - "traefik.http.routers.baserow-media-http.rule=PathPrefix(`/media`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-media-http.priority=80"
+      - "traefik.http.routers.baserow-media-http.entrypoints=web"
+      - "traefik.http.routers.baserow-media-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.baserow-media-http.service=baserow-backend"
+      - "traefik.http.routers.baserow-mcp.rule=PathPrefix(`/mcp`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-mcp.priority=80"
+      - "traefik.http.routers.baserow-mcp.entrypoints=websecure"
+      - "traefik.http.routers.baserow-mcp.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.baserow-mcp.service=baserow-backend"
+      - "traefik.http.routers.baserow-mcp-http.rule=PathPrefix(`/mcp`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-mcp-http.priority=80"
+      - "traefik.http.routers.baserow-mcp-http.entrypoints=web"
+      - "traefik.http.routers.baserow-mcp-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.baserow-mcp-http.service=baserow-backend"
+      - "traefik.http.services.baserow-backend.loadbalancer.server.port=8000"
+    volumes:
+      - baserow-media-data:/baserow/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      baserow-redis:
+        condition: service_healthy
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  baserow-web-frontend:
+    image: baserow/web-frontend:${BASEROW_VERSION:-2.1.3}
+    container_name: ai-stack-baserow-web-frontend
+    environment:
+      - BASEROW_PUBLIC_URL=https://${BASEROW_DOMAIN}
+      - PUBLIC_WEB_FRONTEND_URL=https://${BASEROW_DOMAIN}
+      - PUBLIC_BACKEND_URL=https://${BASEROW_DOMAIN}
+      - PRIVATE_BACKEND_URL=http://baserow-backend:8000
+      - NUXT_APP_BASE_URL=/
+      - BASEROW_EXTRA_ALLOWED_HOSTS=${BASEROW_DOMAIN}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/_health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=ai-stack"
+      - "traefik.http.routers.baserow.rule=PathPrefix(`/`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow.priority=30"
+      - "traefik.http.routers.baserow.entrypoints=websecure"
+      - "traefik.http.routers.baserow.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.baserow.service=baserow-web-frontend"
+      - "traefik.http.routers.baserow-http.rule=PathPrefix(`/`) && Host(`${BASEROW_DOMAIN}`)"
+      - "traefik.http.routers.baserow-http.priority=30"
+      - "traefik.http.routers.baserow-http.entrypoints=web"
+      - "traefik.http.routers.baserow-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.baserow-http.service=baserow-web-frontend"
+      - "traefik.http.services.baserow-web-frontend.loadbalancer.server.port=3000"
+    depends_on:
+      - baserow-backend
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  baserow-celery:
+    image: baserow/backend:${BASEROW_VERSION:-2.1.3}
+    container_name: ai-stack-baserow-celery
+    command: ["celery-worker"]
+    environment:
+      - SECRET_KEY=${BASEROW_SECRET_KEY:-change-me-baserow-secret}
+      - BASEROW_JWT_SIGNING_KEY=${BASEROW_JWT_SIGNING_KEY:-change-me-baserow-jwt}
+      - BASEROW_PUBLIC_URL=https://${BASEROW_DOMAIN}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DB_USER:-app_user}
+      - DATABASE_PASSWORD=${DB_PASSWORD:-app_pass}
+      - DATABASE_NAME=${BASEROW_DB:-baserow}
+      - REDIS_HOST=baserow-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${BASEROW_REDIS_PASSWORD:-change-me-baserow-redis}
+      - PRIVATE_BACKEND_URL=http://baserow-backend:8000
+    volumes:
+      - baserow-media-data:/baserow/media
+    depends_on:
+      - baserow-backend
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  baserow-celery-export:
+    image: baserow/backend:${BASEROW_VERSION:-2.1.3}
+    container_name: ai-stack-baserow-celery-export
+    command: ["celery-exportworker"]
+    environment:
+      - SECRET_KEY=${BASEROW_SECRET_KEY:-change-me-baserow-secret}
+      - BASEROW_JWT_SIGNING_KEY=${BASEROW_JWT_SIGNING_KEY:-change-me-baserow-jwt}
+      - BASEROW_PUBLIC_URL=https://${BASEROW_DOMAIN}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DB_USER:-app_user}
+      - DATABASE_PASSWORD=${DB_PASSWORD:-app_pass}
+      - DATABASE_NAME=${BASEROW_DB:-baserow}
+      - REDIS_HOST=baserow-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${BASEROW_REDIS_PASSWORD:-change-me-baserow-redis}
+      - PRIVATE_BACKEND_URL=http://baserow-backend:8000
+    volumes:
+      - baserow-media-data:/baserow/media
+    depends_on:
+      - baserow-backend
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  baserow-celery-beat:
+    image: baserow/backend:${BASEROW_VERSION:-2.1.3}
+    container_name: ai-stack-baserow-celery-beat
+    command: ["celery-beat"]
+    stop_signal: SIGQUIT
+    environment:
+      - SECRET_KEY=${BASEROW_SECRET_KEY:-change-me-baserow-secret}
+      - BASEROW_JWT_SIGNING_KEY=${BASEROW_JWT_SIGNING_KEY:-change-me-baserow-jwt}
+      - BASEROW_PUBLIC_URL=https://${BASEROW_DOMAIN}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DB_USER:-app_user}
+      - DATABASE_PASSWORD=${DB_PASSWORD:-app_pass}
+      - DATABASE_NAME=${BASEROW_DB:-baserow}
+      - REDIS_HOST=baserow-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${BASEROW_REDIS_PASSWORD:-change-me-baserow-redis}
+      - PRIVATE_BACKEND_URL=http://baserow-backend:8000
+    volumes:
+      - baserow-media-data:/baserow/media
+    depends_on:
+      - baserow-backend
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # ===========================================
+  # LiteLLM - AI Gateway
+  # ===========================================
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: ai-stack-litellm
+    command: ["--port", "80", "--host", "0.0.0.0"]
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_API_KEY:-}
+      - DATABASE_URL=postgresql://${DB_USER:-app_user}:${DB_PASSWORD:-app_pass}@postgres:5432/${LITELLM_DB:-litellm}
+      - STORE_MODEL_IN_DB=True
+      - SERVER_ROOT_PATH=/llm
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.litellm.rule=PathPrefix(`/llm`) && Host(`${PROXY_DOMAIN}`)"
+      - "traefik.http.routers.litellm.priority=20"
+      - "traefik.http.routers.litellm.entrypoints=websecure"
+      - "traefik.http.routers.litellm.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.litellm.service=litellm"
+      - "traefik.http.services.litellm.loadbalancer.server.port=80"
+      - "traefik.http.routers.litellm-http.rule=PathPrefix(`/llm`) && Host(`${PROXY_DOMAIN}`)"
+      - "traefik.http.routers.litellm-http.priority=20"
+      - "traefik.http.routers.litellm-http.entrypoints=web"
+      - "traefik.http.routers.litellm-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.litellm-http.service=litellm"
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # ===========================================
+  # Moltis - AI Agent Gateway
+  # ===========================================
+  moltis:
+    image: ghcr.io/digitalspacestdio/moltis-n8n-ai-moltis:latest
+    container_name: ai-stack-moltis-gateway
+    command: ["--no-tls", "--log-level", "info"]
+    user: "0:0"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.moltis.rule=PathPrefix(`/`) && Host(`${PROXY_DOMAIN}`)"
+      - "traefik.http.routers.moltis.priority=1"
+      - "traefik.http.routers.moltis.entrypoints=websecure"
+      - "traefik.http.routers.moltis.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.moltis.service=moltis"
+      - "traefik.http.services.moltis.loadbalancer.server.port=13131"
+      - "traefik.http.routers.moltis-http.rule=PathPrefix(`/`) && Host(`${PROXY_DOMAIN}`)"
+      - "traefik.http.routers.moltis-http.priority=1"
+      - "traefik.http.routers.moltis-http.entrypoints=web"
+      - "traefik.http.routers.moltis-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.moltis-http.service=moltis"
+    depends_on:
+      - litellm
+      - n8n
+    volumes:
+      - moltis-config:/root/.config/moltis
+      - moltis-data:/root/.moltis
+      - ./hooks:/root/.moltis/hooks
+      - ./workspace:/root/.moltis/workspace
+      - ./config/moltis.toml:/root/.config/moltis/moltis.toml
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - OPENAI_API_KEY=${LITELLM_API_KEY:-}
+      - MOLTIS_PASSWORD=${MOLTIS_PASSWORD:-}
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # n8n - Workflow Automation
+  # ===========================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: ai-stack-n8n-workflows
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=PathPrefix(`/n8n/`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.n8n.service=n8n"
+      - "traefik.http.routers.n8n.middlewares=n8n-stripprefix"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+      - "traefik.http.middlewares.n8n-stripprefix.stripprefix.prefixes=/n8n"
+      - "traefik.http.routers.n8n-http.rule=PathPrefix(`/n8n/`)"
+      - "traefik.http.routers.n8n-http.entrypoints=web"
+      - "traefik.http.routers.n8n-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.n8n-http.service=n8n"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./workflows:/home/node/workflows
+    environment:
+      - N8N_HOST=${PROXY_DOMAIN}
+      - N8N_PORT=${N8N_PORT:-5678}
+      - N8N_PROTOCOL=https
+      - N8N_PATH=/n8n/
+      - N8N_EDITOR_BASE_URL=https://${PROXY_DOMAIN}/n8n/
+      - WEBHOOK_URL=https://${PROXY_DOMAIN}/n8n/
+      - NODE_ENV=production
+      - NODE_FUNCTION_ALLOW_EXTERNAL=node-fetch
+      - NODE_FUNCTION_ALLOW_BUILTIN=fs,path
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=72
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=1000
+      - N8N_PROXY_HOPS=1
+      # PostgreSQL (recommended for production)
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${DB_NAME:-app_db}
+      - DB_POSTGRESDB_USER=${DB_USER:-app_user}
+      - DB_POSTGRESDB_PASSWORD=${DB_PASSWORD:-app_pass}
+      - GENERIC_TIMEZONE=${TIMEZONE:-UTC}
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_BASIC_AUTH_USER=
+      - N8N_BASIC_AUTH_PASSWORD=
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
+      - N8N_METRICS=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      traefik:
+        condition: service_started
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # ===========================================
+  # Dozzle - Lightweight centralized log viewer
+  # ===========================================
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: ai-stack-dozzle
+    environment:
+      - DOZZLE_BASE=/dozzle
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dozzle.rule=PathPrefix(`/dozzle/`)"
+      - "traefik.http.routers.dozzle.entrypoints=websecure"
+      - "traefik.http.routers.dozzle.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.dozzle.service=dozzle"
+      - "traefik.http.services.dozzle.loadbalancer.server.port=8080"
+      - "traefik.http.routers.dozzle-http.rule=PathPrefix(`/dozzle/`)"
+      - "traefik.http.routers.dozzle-http.entrypoints=web"
+      - "traefik.http.routers.dozzle-http.middlewares=redirect-to-https"
+      - "traefik.http.routers.dozzle-http.service=dozzle"
+    depends_on:
+      - traefik
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+volumes:
+  traefik-letsencrypt:
+    external: true
+    name: moltis-n8n-ai_traefik-letsencrypt
+  postgres-data:
+    external: true
+    name: moltis-n8n-ai_postgres-data
+  moltis-config:
+    external: true
+    name: moltis-n8n-ai_moltis-config
+  moltis-data:
+    external: true
+    name: moltis-n8n-ai_moltis-data
+  n8n-data:
+    external: true
+    name: moltis-n8n-ai_n8n-data
+  baserow-media-data:
+    external: true
+    name: moltis-n8n-ai_baserow-media-data
+
+networks:
+  ai-stack:
+    name: ai-stack
+    driver: bridge

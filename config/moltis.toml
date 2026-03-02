@@ -1,0 +1,318 @@
+# Moltis config for moltis-n8n stack
+# Routes OpenAI-compatible traffic through LiteLLM.
+
+[server]
+bind = "0.0.0.0"
+port = 13131
+http_request_logs = false
+ws_request_logs = false
+log_buffer_size = 1000
+
+[identity]
+name = "Moltis"
+emoji = "🦊"
+
+[providers]
+offered = ["openai"]
+
+[providers.openai]
+enabled = true
+models = ["gpt-4o"]
+base_url = "http://litellm/llm"
+
+[chat]
+priority_models = ["gpt-4o"]
+message_queue_mode = "followup"
+
+[tools]
+agent_timeout_secs = 600
+agent_max_iterations = 25
+max_tool_result_bytes = 50000
+
+[tools.exec]
+default_timeout_secs = 30
+max_output_bytes = 204800
+approval_mode = "on-miss"
+security_level = "allowlist"
+allowlist = []
+
+[tools.exec.sandbox]
+mode = "all"
+scope = "session"
+workspace_mount = "ro"
+no_network = true
+backend = "auto"
+packages = [
+    "curl",
+    "wget",
+    "ca-certificates",
+    "dnsutils",
+    "netcat-openbsd",
+    "openssh-client",
+    "iproute2",
+    "net-tools",
+    "python3",
+    "python3-dev",
+    "python3-pip",
+    "python3-venv",
+    "python-is-python3",
+    "nodejs",
+    "npm",
+    "ruby",
+    "ruby-dev",
+    "build-essential",
+    "clang",
+    "libclang-dev",
+    "llvm-dev",
+    "pkg-config",
+    "libssl-dev",
+    "libsqlite3-dev",
+    "libyaml-dev",
+    "liblzma-dev",
+    "autoconf",
+    "automake",
+    "libtool",
+    "bison",
+    "flex",
+    "dpkg-dev",
+    "fakeroot",
+    "zip",
+    "unzip",
+    "bzip2",
+    "xz-utils",
+    "p7zip-full",
+    "tar",
+    "zstd",
+    "lz4",
+    "pigz",
+    "git",
+    "gnupg2",
+    "jq",
+    "rsync",
+    "file",
+    "tree",
+    "sqlite3",
+    "sudo",
+    "locales",
+    "tzdata",
+    "shellcheck",
+    "patchelf",
+    "ripgrep",
+    "fd-find",
+    "yq",
+    "tmux",
+    "chromium",
+    "libxss1",
+    "libnss3",
+    "libnspr4",
+    "libasound2t64",
+    "libatk1.0-0t64",
+    "libatk-bridge2.0-0t64",
+    "libcups2t64",
+    "libdrm2",
+    "libgbm1",
+    "libgtk-3-0t64",
+    "libxcomposite1",
+    "libxdamage1",
+    "libxfixes3",
+    "libxrandr2",
+    "libxkbcommon0",
+    "fonts-liberation",
+    "imagemagick",
+    "graphicsmagick",
+    "libvips-tools",
+    "pngquant",
+    "optipng",
+    "jpegoptim",
+    "webp",
+    "libimage-exiftool-perl",
+    "libheif-dev",
+    "ffmpeg",
+    "sox",
+    "lame",
+    "flac",
+    "vorbis-tools",
+    "opus-tools",
+    "mediainfo",
+    "pandoc",
+    "poppler-utils",
+    "ghostscript",
+    "texlive-latex-base",
+    "texlive-latex-extra",
+    "texlive-fonts-recommended",
+    "antiword",
+    "catdoc",
+    "unrtf",
+    "libreoffice-core",
+    "libreoffice-writer",
+    "csvtool",
+    "xmlstarlet",
+    "html2text",
+    "dos2unix",
+    "miller",
+    "datamash",
+    "gdal-bin",
+    "mapnik-utils",
+    "osm2pgsql",
+    "osmium-tool",
+    "osmctools",
+    "python3-mapnik",
+    "libgdal-dev",
+    "vdirsyncer",
+    "khal",
+    "python3-caldav",
+    "isync",
+    "offlineimap3",
+    "notmuch",
+    "notmuch-mutt",
+    "aerc",
+    "mutt",
+    "neomutt",
+    "tin",
+    "slrn",
+    "python3-discord",
+]
+
+[tools.exec.sandbox.resource_limits]
+
+[tools.policy]
+allow = []
+deny = ["mcp__*__readAttachment"]
+
+[tools.web.search]
+enabled = true
+provider = "brave"
+max_results = 5
+timeout_seconds = 30
+cache_ttl_minutes = 15
+duckduckgo_fallback = false
+
+[tools.web.search.perplexity]
+
+[tools.web.fetch]
+enabled = true
+max_chars = 50000
+timeout_seconds = 30
+cache_ttl_minutes = 15
+max_redirects = 3
+readability = true
+ssrf_allowlist = []
+
+[tools.maps]
+provider = "google_maps"
+
+[tools.browser]
+enabled = true
+headless = true
+viewport_width = 2560
+viewport_height = 1440
+device_scale_factor = 2.0
+max_instances = 0
+memory_limit_percent = 90
+idle_timeout_secs = 300
+navigation_timeout_ms = 30000
+chrome_args = []
+sandbox_image = "browserless/chrome"
+allowed_domains = []
+low_memory_threshold_mb = 2048
+persist_profile = true
+
+[skills]
+enabled = false
+search_paths = []
+auto_load = []
+
+[mcp.servers]
+
+[channels.telegram]
+
+[tls]
+enabled = true
+auto_generate = true
+
+[auth]
+disabled = false
+
+[metrics]
+enabled = true
+prometheus_endpoint = true
+history_points = 360
+
+[metrics.labels]
+
+[user]
+name = "Serhii"
+timezone = "Asia/Tbilisi"
+
+[memory]
+disable_rag = false
+llm_reranking = false
+session_export = false
+
+[memory.qmd.collections]
+
+[tailscale]
+mode = "off"
+reset_on_exit = true
+
+[failover]
+enabled = true
+fallback_models = []
+
+[heartbeat]
+enabled = true
+every = "30m"
+ack_max_chars = 300
+sandbox_enabled = true
+
+[heartbeat.active_hours]
+start = "08:00"
+end = "24:00"
+timezone = "local"
+
+[voice.tts]
+enabled = false
+provider = "elevenlabs"
+providers = []
+
+[voice.tts.elevenlabs]
+
+[voice.tts.openai]
+
+[voice.tts.google]
+
+[voice.tts.piper]
+
+[voice.tts.coqui]
+endpoint = "http://localhost:5002"
+
+[voice.stt]
+enabled = true
+provider = "whisper"
+providers = []
+
+[voice.stt.whisper]
+
+[voice.stt.groq]
+
+[voice.stt.deepgram]
+smart_format = false
+
+[voice.stt.google]
+
+[voice.stt.mistral]
+
+[voice.stt.elevenlabs]
+
+[voice.stt.voxtral_local]
+endpoint = "http://localhost:8000"
+
+[voice.stt.whisper_cli]
+
+[voice.stt.sherpa_onnx]
+
+[cron]
+rate_limit_max = 10
+rate_limit_window_secs = 60
+
+[env]

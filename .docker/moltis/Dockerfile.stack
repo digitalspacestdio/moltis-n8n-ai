@@ -1,0 +1,63 @@
+# Combined Dockerfile for stack usage:
+# - Installs moltis .deb from GitHub release assets (no local compilation)
+# - Adds Node.js, uv, and mcp-proxy used by this stack
+# v0.10.3 arm64 .deb requires libc6 >= 2.39 (bookworm has 2.36).
+# Use trixie so both amd64/arm64 release debs install without manual libc overrides.
+FROM debian:trixie-slim
+
+ARG NODE_MAJOR=22
+ARG MOLTIS_VERSION=v0.10.3
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -yqq --no-install-recommends \
+        ca-certificates \
+        chromium \
+        curl \
+        libgomp1 \
+        sudo \
+        docker.io \
+        tmux \
+        vim-tiny \
+        gnupg \
+        git \
+        python3 \
+        python3-pip \
+        python3-venv \
+        python3-requests \
+        nodejs \
+        npm && \
+    case "${TARGETARCH}" in \
+      amd64) DEB_ARCH="amd64" ;; \
+      arm64) DEB_ARCH="arm64" ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}"; exit 1 ;; \
+    esac && \
+    MOLTIS_VERSION_NO_V="${MOLTIS_VERSION#v}" && \
+    DEB_URL="https://github.com/moltis-org/moltis/releases/download/${MOLTIS_VERSION}/moltis_${MOLTIS_VERSION_NO_V}-1_${DEB_ARCH}.deb" && \
+    curl -fsSL "${DEB_URL}" -o /tmp/moltis.deb && \
+    apt-get install -yqq --no-install-recommends /tmp/moltis.deb && \
+    rm -f /tmp/moltis.deb && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    /root/.local/bin/uv tool install git+https://github.com/sparfenyuk/mcp-proxy && \
+    ln -sf /root/.local/bin/uv /usr/local/bin/uv && \
+    ln -sf /root/.local/bin/mcp-proxy /usr/local/bin/mcp-proxy && \
+    ln -sf /usr/bin/python3 /usr/local/bin/python && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --user-group moltis && \
+    usermod -aG docker moltis && \
+    echo "moltis ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/moltis
+
+RUN mkdir -p /home/moltis/.config/moltis /home/moltis/.moltis && \
+    chown -R moltis:moltis /home/moltis/.config /home/moltis/.moltis
+
+VOLUME ["/home/moltis/.config/moltis", "/home/moltis/.moltis", "/var/run/docker.sock"]
+
+USER moltis
+WORKDIR /home/moltis
+
+EXPOSE 13131 13132
+
+ENTRYPOINT ["moltis"]
+CMD ["--bind", "0.0.0.0", "--port", "13131"]
