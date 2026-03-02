@@ -15,6 +15,7 @@ services:
       - DOCKER_API_VERSION=1.44
     command:
       - "--api.dashboard=true"
+      - "--ping=true"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=ai-stack"
@@ -50,6 +51,11 @@ services:
       - "traefik.http.routers.traefik-api-http.service=api@internal"
       - "traefik.http.middlewares.traefik-strip-prefix.stripprefix.prefixes=/traefik/"
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: always
     networks:
       - ai-stack
@@ -171,6 +177,12 @@ services:
       - "traefik.http.routers.baserow-mcp-http.middlewares=redirect-to-https"
       - "traefik.http.routers.baserow-mcp-http.service=baserow-backend"
       - "traefik.http.services.baserow-backend.loadbalancer.server.port=8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8000/api/_health/ > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     volumes:
       - baserow-media-data:/baserow/media
     depends_on:
@@ -214,7 +226,8 @@ services:
       - "traefik.http.routers.baserow-http.service=baserow-web-frontend"
       - "traefik.http.services.baserow-web-frontend.loadbalancer.server.port=3000"
     depends_on:
-      - baserow-backend
+      baserow-backend:
+        condition: service_healthy
     restart: always
     networks:
       - ai-stack
@@ -240,7 +253,8 @@ services:
     volumes:
       - baserow-media-data:/baserow/media
     depends_on:
-      - baserow-backend
+      baserow-backend:
+        condition: service_healthy
     restart: always
     networks:
       - ai-stack
@@ -266,7 +280,8 @@ services:
     volumes:
       - baserow-media-data:/baserow/media
     depends_on:
-      - baserow-backend
+      baserow-backend:
+        condition: service_healthy
     restart: always
     networks:
       - ai-stack
@@ -293,7 +308,8 @@ services:
     volumes:
       - baserow-media-data:/baserow/media
     depends_on:
-      - baserow-backend
+      baserow-backend:
+        condition: service_healthy
     restart: always
     networks:
       - ai-stack
@@ -324,6 +340,15 @@ services:
       - "traefik.http.routers.litellm-http.entrypoints=web"
       - "traefik.http.routers.litellm-http.middlewares=redirect-to-https"
       - "traefik.http.routers.litellm-http.service=litellm"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/llm/health/liveliness')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: always
     networks:
       - ai-stack
@@ -350,9 +375,16 @@ services:
       - "traefik.http.routers.moltis-http.entrypoints=web"
       - "traefik.http.routers.moltis-http.middlewares=redirect-to-https"
       - "traefik.http.routers.moltis-http.service=moltis"
+    healthcheck:
+      test: /bin/bash -c "</dev/tcp/localhost/13131"
+      start_period: 5s
+      interval: 5s
+      retries: 18
     depends_on:
-      - litellm
-      - n8n
+      litellm:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
     volumes:
       - moltis-config:/root/.config/moltis
       - moltis-data:/root/.moltis
@@ -417,11 +449,17 @@ services:
       - N8N_BASIC_AUTH_PASSWORD=
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
       - N8N_METRICS=false
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5678/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
-      traefik:
-        condition: service_started
+      litellm:
+        condition: service_healthy
     restart: always
     networks:
       - ai-stack
@@ -448,8 +486,27 @@ services:
       - "traefik.http.routers.dozzle-http.entrypoints=web"
       - "traefik.http.routers.dozzle-http.middlewares=redirect-to-https"
       - "traefik.http.routers.dozzle-http.service=dozzle"
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     depends_on:
       - traefik
+    restart: always
+    networks:
+      - ai-stack
+    logging: *default-logging
+
+  # ===========================================
+  # Playwright MCP - Browser Automation
+  # ===========================================
+  playwright:
+    image: mcr.microsoft.com/playwright/mcp
+    container_name: ai-stack-playwright-mcp
+    entrypoint: ["node", "cli.js", "--headless", "--browser", "chromium", "--no-sandbox", "--port", "8931", "--host", "0.0.0.0"]
+    ports:
+      - "8931:8931"
     restart: always
     networks:
       - ai-stack

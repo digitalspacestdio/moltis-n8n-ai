@@ -9,8 +9,9 @@ ws_request_logs = false
 log_buffer_size = 1000
 
 [identity]
-name = "Moltis"
-emoji = "🦊"
+name = "Crafogent"
+emoji = "🐱"
+theme = "cat"
 
 [providers]
 offered = ["openai"]
@@ -172,6 +173,9 @@ packages = [
     "slrn",
     "python3-discord",
 ]
+home_persistence = "shared"
+network = ""
+trusted_domains = []
 
 [tools.exec.sandbox.resource_limits]
 
@@ -217,6 +221,8 @@ allowed_domains = []
 low_memory_threshold_mb = 2048
 persist_profile = true
 
+[agents.presets]
+
 [skills]
 enabled = false
 search_paths = []
@@ -224,19 +230,31 @@ auto_load = []
 
 [mcp.servers]
 
+[channels]
+offered = [
+    "telegram",
+    "discord",
+]
+
 [channels.telegram]
 
 [tls]
 enabled = true
 auto_generate = true
 
+[channels.whatsapp]
+
 [auth]
 disabled = false
+
+[channels.msteams]
 
 [metrics]
 enabled = true
 prometheus_endpoint = true
 history_points = 360
+
+[channels.discord]
 
 [metrics.labels]
 
@@ -251,6 +269,9 @@ session_export = false
 
 [memory.qmd.collections]
 
+[graphql]
+enabled = true
+
 [tailscale]
 mode = "off"
 reset_on_exit = true
@@ -264,6 +285,7 @@ enabled = true
 every = "30m"
 ack_max_chars = 300
 sandbox_enabled = true
+deliver = false
 
 [heartbeat.active_hours]
 start = "08:00"
@@ -316,3 +338,8 @@ rate_limit_max = 10
 rate_limit_window_secs = 60
 
 [env]
+
+[caldav]
+enabled = false
+
+[caldav.accounts]
